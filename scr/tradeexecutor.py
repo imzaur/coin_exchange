@@ -22,9 +22,11 @@ class CryptoExchange(object):
         return {k: v for k, v in balance.items() if v > 0}
 
     def fetch_open_orders(self, symbol: str = None):
+
         return self.exchange.fetch_open_orders(symbol=symbol)
 
     def fetch_order(self, order_id: int):
+
         return self.exchange.fetch_open_order(order_id)
 
     def cancel_order(self, order_id: int):
@@ -34,6 +36,7 @@ class CryptoExchange(object):
             pass
 
     def create_sell_order(self, symbol: str, amount: float, price: float):
+
         return self.exchange.create_order(
             symbol=symbol,
             type='limit',
@@ -43,6 +46,7 @@ class CryptoExchange(object):
         )
 
     def create_buy_order(self, symbol: str, amount: float, price: float):
+
         return self.exchange.create_order(
             symbol=symbol,
             type='limit',
@@ -88,6 +92,37 @@ class TradeExecutor(object):
     async def execute_long_trade(self, trade: LongTrade):
         buy_price = trade.start_price
         sell_price = trade.exit_price
+        symbol = trade.echange_symbol
+        amount = trade.amount
 
+        order = self.exchange.create_buy_order(symbol, amount, price)
+        logging.info(
+            f'Opened long trade: {amount} of {symbol}. Target buy '
+            f'{buy_price}, sell price {sell_price}'
+        )
 
+        await self._wait_order_complete(order['id'])
 
+        order = self.exchange.create_sell_order(symbol, amount, price)
+
+        await self._wait_order_complete(order['id'])
+        logging.info(
+            f'Completed long trade: {amount} of {symbol}. '
+            f'Bought at {buy_price} and sell at {sell_price}'
+        )
+
+    async def _wait_order_complete(self, order_id):
+        status = 'open'
+        order = None
+
+        while status is 'open':
+            await asyncio.sleep(self.check_timeout)
+            order = self.exchange.fetch_order(order_id)
+            status = order['status']
+
+        logging.info(f'Finished order {order_id} with status {status}')
+
+        if status == 'canceled':
+            raise ExchangeError('Trade has been canceled')
+
+        return order
