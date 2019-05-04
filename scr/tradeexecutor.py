@@ -7,7 +7,7 @@ from ccxt import (
     OrderNotFound
 )
 
-from model import LongTrade, ShortTrade
+from exchange import LongTrade, ShortTrade
 
 
 class CryptoExchange(object):

@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     BaseFilter,
@@ -10,8 +13,9 @@ from telegram.ext import (
     run_async
 )
 
-from tradeexecutor import TradeExecutor
 import config
+from exchange import LongTrade, ShortTrade
+from tradeexecutor import TradeExecutor
 import utils
 
 
@@ -115,5 +119,159 @@ class TelegramBot(object):
 
             return config.COIN_NAME
 
+        def cancel_order(bot, update):
+            query = update.callback_query
 
+            if query.data == config.CANCEL:
+                query.message.reply_text("Enter order index to cancel")
+                return config.PROCESS_ORD_CANCEL
 
+            show_help(bot, update)
+            return ConversationHandler.END
+
+        def process_order_cancel(bot, update, user_data):
+            idx = int(update.message.text)
+            order = user_data[config.OPEN_ORDERS][idx]
+            self.exchange.cancel_order(order['id'])
+            update.message.reply_text(
+                f'Canceled order: {utils.format_order(order)}'
+            )
+            return ConversationHandler.END
+
+        def process_coin_name(bot, update, user_data):
+            user_data[config.COIN_NAME] = update.message.text.upper()
+            update.message.reply_text(
+                f'What amount of {user_data[config.COIN_NAME]}'
+            )
+            return config.AMOUNT
+
+        def process_amount(bot, update, user_data):
+            user_data[config.AMOUNT] = float(update.message.text)
+            update.message.reply_text(
+                f'What percent change for {user_data[config.AMOUNT]} '
+                f'{user_data[config.COIN_NAME]}'
+            )
+            return config.PERCENT_CHANGE
+
+        def process_percent(bot, update, user_data):
+            user_data[config.PERCENT_CHANGE] = float(update.message.text)
+            update.message.reply_text(
+                f'What price for 1 unit of {user_data[config.COIN]}'
+            )
+            return config.PRICE
+
+        def process_price(bot, update, user_data):
+            user_data[config.PRICE] = float(update.message.text)
+
+            keyboard = [
+                [InlineKeyboardButton("Confirm",
+                                      callback_data=config.CONFIRM),
+                 InlineKeyboardButton("Cancel",
+                                      callback_data=config.CANCEL)]
+            ]
+
+            update.message.reply_text(
+                f"Confirm the trade: '{TelegramBot.build_trade(user_data)}'",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return config.PROCESS_TRADE
+
+        def process_trade(bot, update, user_data):
+            query = update.callback_query
+
+            if query.data == config.CONFIRM:
+                trade = TelegramBot.build_trade(user_data)
+                self._execute_trade(trade)
+                update.callback_query.message.reply_text(f'Scheduled: {trade}')
+            else:
+                show_help(bot, update)
+
+            return ConversationHandler.END
+
+        def handle_error(bot, update, error):
+            logging.warning('Update "%s" caused error "%s"', update, error)
+            update.message.reply_text(f'Unexpected error:\n{error}')
+
+        def build_conversation_handler():
+            entry_handler = CommandHandler(
+                'trade',
+                filters=self.private_filter,
+                callback=show_options
+            )
+            conversation_handler = ConversationHandler(
+                entry_points=[entry_handler],
+                fallbacks=[entry_handler],
+                states={
+                    config.SELECTION: [CallbackQueryHandler(
+                        process_trade_selection,
+                        pass_user_data=True
+                    )],
+                    config.CANCEL_ORD: [CallbackQueryHandler(
+                        cancel_order,
+                        pass_user_data=True
+                    )],
+                    config.PROCESS_ORD_CANCEL: [MessageHandler(
+                        filters=Filters.text,
+                        callback=process_order_cancel,
+                        pass_user_data=True
+                    )],
+                    config.COIN_NAME: [MessageHandler(
+                        filters=Filters.text,
+                        callback=process_coin_name,
+                        pass_user_data=True
+                    )],
+                    config.AMOUNT: [MessageHandler(
+                        filters=Filters.text,
+                        callback=process_amount,
+                        pass_user_data=True
+                    )],
+                    config.PERCENT_CHANGE: [MessageHandler(
+                        filters=Filters.text,
+                        callback=process_percent,
+                        pass_user_data=True
+                    )],
+                    config.PRICE: [MessageHandler(
+                        filters=Filters.text,
+                        callback=process_price,
+                        pass_user_data=True
+                    )],
+                    config.PROCESS_TRADE: [CallbackQueryHandler(
+                        process_trade,
+                        pass_user_data=True
+                    )]
+                }
+            )
+
+            return conversation_handler
+
+        self.dispatcher.add_handler(CommandHandler(
+            'start',
+            filters=Filters.text,
+            callback=show_help
+        ))
+        self.dispatcher.add_handler(build_conversation_handler())
+        self.dispatcher.add_error_handler(handle_error)
+
+    def start_bot(self):
+        self.updater.start_polling()
+
+    @run_async
+    def _execute_trade(self, trade):
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(self.trade_executor.execute_trade(trade))
+        loop.run_until_complete(task)
+
+    @staticmethod
+    def build_trade(user_data):
+        current_trade = user_data[config.SELECTION]
+        price = user_data[config.PRICE]
+        coin_name = user_data[config.COIN_NAME]
+        amount = user_data[config.AMOUNT]
+        percent_change = user_data[config.PERCENT_CHANGE]
+
+        if current_trade == config.LONG_TRADE:
+            return LongTrade(price, coin_name, amount, percent_change)
+        elif current_trade == config.SHORT_TRADE:
+            return ShortTrade(price, coin_name, amount, percent_change)
+        else:
+            raise NotImplementedError
